@@ -17,26 +17,26 @@
 using namespace std;
 
 struct Instruction {
-    string assembly;
-    int category;
-    int opcode;
-    string operation;
-    unsigned int r1;
-    unsigned int r2;
-    unsigned int r3;
-    long lValue;
-    int sValue;
-    int index;
+    string      assembly;
+    int         category;
+    int         opcode;
+    string      operation;
+    unsigned    int r1;
+    unsigned    int r2;
+    unsigned    int r3;
+    long        lValue;
+    int         sValue;
+    int         index;
 };
 
 class Processor {
 private:
-    unsigned int PC;
-    long* registers;
-    map<int, long>* memory;
-    map<int, Instruction>* instructions;
-    vector<int> *alteredMemory;
-    int cycleCounter;
+    unsigned int            PC;
+    long*                   registers;
+    map<int, long>*         memory;
+    map<int, Instruction>*  instructions;
+    vector<int>*            alteredMemory;
+    int                     cycleCounter;
 
 public:
     Processor () {
