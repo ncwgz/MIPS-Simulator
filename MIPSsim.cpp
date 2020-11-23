@@ -46,8 +46,8 @@ class Processor {
 private:
     unsigned int            PC;
     long*                   registers;
-    vector<int>*            r_ready;
-    vector<int>*            w_ready;
+    vector<int>             r_ready[32];
+    vector<int>             w_ready[32];
     map<int, long>*         memory;
     map<int, Instruction>*  instructions;
     vector<int>*            altered_memory;
@@ -56,7 +56,7 @@ private:
     vector<pair<int, Instruction>>*    pre_issue;  // 4 entries
     vector<pair<int, Instruction>>*    pre_alu_1;  // 2 entries
     vector<pair<int, Instruction>>*    pre_alu_2;  // 2 entry
-    vector<WriteData>*    post_alu_2; // 1 entry
+    vector<WriteData>*                 post_alu_2; // 1 entry
     vector<pair<int, Instruction>>*    pre_mem;    // 1 entry
     vector<WriteData>*                 post_mem;   // 1 entry
 
@@ -144,12 +144,28 @@ private:
         }
     }
 
+    // return true if locked
+    bool check_lock (bool is_read, int reg, int p_order) {
+        if (is_read) {
+            if (!r_ready[reg].empty()) {
+                if (r_ready[reg].front() < p_order) {
+                    return true;
+                }
+            }
+        } else {
+            if (!w_ready[reg].empty()) {
+                if (w_ready[reg].front() < p_order) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
 public:
     Processor () {
         this->PC = 256;
         this->registers = new long[32];
-        this->r_ready = new vector<int>[32];
-        this->w_ready = new vector<int>[32];
         this->memory = new map<int, long>();
         this->instructions = new map<int, Instruction>();
         this->altered_memory = new vector<int>();
@@ -179,23 +195,23 @@ public:
             ss << i.index << "\t";
         }
         if (i.category == 0) {
-            ss << i.sValue << endl;
+            ss << i.sValue;
         }
         else if (i.category == 1) {
             ss << i.operation << " ";
             switch (i.opcode) {
                 case 0: { // J
-                    ss << "#" << i.lValue << endl;
+                    ss << "#" << i.lValue;
                     break;
                 }
                 case 1: { // JR
-                    ss << "R" << i.r1 << endl;
+                    ss << "R" << i.r1;
                     break;
                 }
                 case 2: { // BEQ
                     ss << "R" << i.r1 << ", ";
                     ss << "R" << i.r2 << ", ";
-                    ss << "#" << i.lValue << endl;
+                    ss << "#" << i.lValue;
                     break;
                 }
                 case 3: { // BLGZ
@@ -203,11 +219,10 @@ public:
                 }
                 case 4: { // BGTZ
                     ss << "R" << i.r1 << ", ";
-                    ss << "#" << i.lValue << endl;
+                    ss << "#" << i.lValue;
                     break;
                 }
                 case 5: { // BREAK
-                    ss << endl;
                     break;
                 }
                 case 6: { // SW
@@ -216,7 +231,7 @@ public:
                 case 7: { // LW
                     ss << "R" << i.r2 << ", ";
                     ss << "" << i.lValue;
-                    ss << "(R" << i.r1 << ")" << endl;
+                    ss << "(R" << i.r1 << ")";
                     break;
                 }
                 case 8: { // SLL
@@ -228,11 +243,10 @@ public:
                 case 10: { // SRA
                     ss << "R" << i.r2 << ", ";
                     ss << "R" << i.r1 << ", ";
-                    ss << "#" << i.lValue << endl;
+                    ss << "#" << i.lValue;
                     break;
                 }
                 case 11: { // NOP
-                    ss << endl;
                     break;
                 };
             }
@@ -264,13 +278,13 @@ public:
                 case 7: { // SLT
                     ss << "R" << i.r3 << ", ";
                     ss << "R" << i.r1 << ", ";
-                    ss << "R" << i.r2 << endl;
+                    ss << "R" << i.r2;
                     break;
                 }
                 case 8: { // ADDI
                     ss << "R" << i.r2 << ", ";
                     ss << "R" << i.r1 << ", ";
-                    ss << "#" << i.sValue << endl;
+                    ss << "#" << i.sValue;
                     break;
                 }
                 case 9: { // ANDI
@@ -282,10 +296,13 @@ public:
                 case 11: { // XORI
                     ss << "R" << i.r2 << ", ";
                     ss << "R" << i.r1 << ", ";
-                    ss << "#" << i.lValue << endl;
+                    ss << "#" << i.lValue;
                     break;
                 }
             }
+        }
+        if (isIndexNeeded) {
+            ss << endl;
         }
         return ss.str();
     }
@@ -331,7 +348,7 @@ public:
         for (int i = 0; i < 4; ++i) {
             file << "\tEntry " << i << ":";
             if (pre_issue->size() > i) {
-                cout << " [" << getAssembly((*pre_issue)[i].second, false) << "]";
+                file << " [" << getAssembly((*pre_issue)[i].second, false) << "]";
             }
             file << endl;
         }
@@ -340,7 +357,7 @@ public:
         for (int i = 0; i < 2; ++i) {
             file << "\tEntry " << i << ":";
             if (pre_alu_1->size() > i) {
-                    cout << " [" << getAssembly((*pre_alu_1)[i].second, false) << "]";
+                    file << " [" << getAssembly((*pre_alu_1)[i].second, false) << "]";
             }
             file << endl;
         }
@@ -361,7 +378,7 @@ public:
         for (int i = 0; i < 2; ++i) {
             file << "\tEntry " << i << ":";
             if (pre_alu_2->size() > i) {
-                cout << " [" << getAssembly((*pre_alu_2)[i].second, false) << "]";
+                file << " [" << getAssembly((*pre_alu_2)[i].second, false) << "]";
             }
             file << endl;
         }
@@ -542,14 +559,17 @@ public:
         this->PC = 256;
         ofstream file("simulation.txt", ios::out);
         while (!isToBreak) {
-            fetch();
-            issue();
+            cycle_counter ++;
+            cout << cycle_counter << ", " << PC << endl;
+            writeback();
+            mem();
             alu1();
             alu2();
-            mem();
-            writeback();
+            issue();
+            fetch();
             writeSimulationFile(file);
         }
+
         file << endl;
         file.close();
     }
@@ -575,36 +595,41 @@ public:
             // NOP
             if (inst.opcode == 11) {
                 PC += 4;
-                this->executed_instruction = &inst;
+                Instruction ii = inst;
+                this->executed_instruction = &ii;
                 continue;
             }
             // BREAK
             if (inst.opcode == 5) {
                 this->isToBreak = true;
-                this->executed_instruction = &inst;
+                Instruction ii = inst;
+                this->executed_instruction = &ii;
                 return;
             }
             // J
             if (inst.opcode == 0) {
                 PC = inst.lValue;
-                this->executed_instruction = &inst;
+                Instruction ii = inst;
+                this->executed_instruction = &ii;
                 return;
             }
             // JR, BLTZ, BLGZ
             if (inst.opcode == 1 || inst.opcode == 3 || inst.opcode == 4) {
-                if (r_ready[inst.r1].empty()) {
+                if (!check_lock(true, inst.r1, fetch_counter)) {
                     switch (inst.opcode) {
                         // JR
                         case 1: {
                             PC = registers[inst.r1];
-                            this->executed_instruction = &inst;
+                            Instruction ii = inst;
+                            this->executed_instruction = &ii;
                             break;
                         }
                             // BLTZ
                         case 3: {
                             if (registers[inst.r1] < 0) {
                                 PC += inst.lValue;
-                                this->executed_instruction = &inst;
+                                Instruction ii = inst;
+                                this->executed_instruction = &ii;
                             }
                             break;
                         }
@@ -612,26 +637,33 @@ public:
                         case 4: {
                             if (registers[inst.r2] > 0) {
                                 PC += inst.lValue;
-                                this->executed_instruction = &inst;
+                                Instruction ii = inst;
+                                this->executed_instruction = &ii;
                             }
                             break;
                         }
                     }
                     return;
                 } else {
-                    this->waiting_instruction = &inst;
+                    Instruction ii = inst;
+                    this->waiting_instruction = &ii;
                     return;
                 }
             }
             // BEQ
             if (inst.opcode == 2) {
-                if (r_ready[inst.r1].empty() && r_ready[inst.r2].empty()) {
+                if ((!check_lock(true, inst.r1, fetch_counter)) && (!check_lock(true,inst.r2, fetch_counter))) {
                     if (registers[inst.r1] == registers[inst.r2]) {
                         PC += inst.lValue;
+                    } else {
+                        PC += 4;
                     }
+                    Instruction ii = inst;
+                    this->executed_instruction = &ii;
                     return;
                 } else {
-                    this->waiting_instruction = &inst;
+                    Instruction ii = inst;
+                    this->waiting_instruction = &ii;
                     return;
                 }
             }
@@ -639,12 +671,6 @@ public:
     }
 
     void issue() {
-        /*
-         * TODO:
-         *   1. Add r/w checks
-         *   2. Note p_order checks
-         *   The codes below might need to be all deleted;
-         */
         bool is_alu1_allocated = false;
         bool is_alu2_allocated = false;
         auto it = pre_issue->begin();
@@ -652,49 +678,52 @@ public:
 
             // ALU1 & ALU2 both allocated
             if (is_alu1_allocated && is_alu2_allocated) return;
+            Instruction i = it->second;
+            int o = it->first;
 
-
-
-            // Old codes...
-            // register busy (2 registers)
-            if (!r_ready[it->second.r1].empty() || !r_ready[it->second.r2].empty()) {
-
-                continue;
-            }
-            if (!r_ready[it->second.r2].empty() )
-            // register busy (3 registers)
-            if (it->second.category == 3 && it->second.opcode < 8) {
-                auto a = r_ready[it->second.r3];
-                if (!r_ready[it->second.r3].empty())
+            // ======= check registers =======
+            // SW: read r1, r2
+            if (i.category == 1 && i.opcode == 6) {
+                if (check_lock(true, i.r1, o) || check_lock(true, i.r2, o))
                     continue;
             }
+            // write r3, read r1, r2
+            else if (i.category == 3 && i.opcode < 8) {
+                if (check_lock(false, i.r3, o) || check_lock(true, i.r1, o) || check_lock(true, i.r2, o))
+                    continue;
+            }
+            // write r2, read r1
+            else {
+                if (check_lock(false, i.r2, o) || check_lock(true, i.r1, o))
+                    continue;
+            }
+            // ============ done =============
 
-            // LW, SW
-            if (it->second.category == 1 && it->second.opcode < 8) {
-                for (auto i = pre_issue->begin(); it != pre_issue->end(); ++i) {
-                    if (i->second.category == 1 && i->second.opcode == 6) {
-                        if (i < it) {
+            // ========= check stores ========
+            // LW/SW: No SW before it
+            if (i.category == 1 && i.opcode < 8) {
+                for (auto itt : *pre_issue) {
+                    if (itt.second.category == 1 && itt.second.opcode == 6) {
+                        if (itt.first < it->first) {
                             continue;
                         }
                     }
                 }
-
-                if (pre_alu_1->size() != 2) {
-                    pre_alu_1->push_back(*it);
-                    pre_issue->erase(it);
-                    is_alu1_allocated = true;
-                } else {
-                    continue;
-                }
             }
+            // ============ done =============
 
-            // SLL, SRL, SRA, Cat-3
-            if ((it->second.category == 1 && it->second.opcode >7) || (it->second.category == 3)) {
-                if (pre_alu_2->size() != 2) {
+            if (i.category == 3 || (i.category == 1 && i.opcode > 7)) {
+                if (!is_alu2_allocated) {
                     pre_alu_2->push_back(*it);
                     pre_issue->erase(it);
                     is_alu2_allocated = true;
-                } else {
+                    continue;
+                }
+            } else {
+                if (!is_alu1_allocated) {
+                    pre_alu_1->push_back(*it);
+                    pre_issue->erase(it);
+                    is_alu1_allocated = true;
                     continue;
                 }
             }
@@ -706,7 +735,7 @@ public:
     void alu1() {
         if (!pre_alu_1->empty()) {
             pre_mem->push_back((*pre_alu_1)[0]);
-            pre_alu_1->erase(pre_alu_1->begin() + 1);
+            pre_alu_1->erase(pre_alu_1->begin());
         }
     }
 
@@ -786,7 +815,7 @@ public:
 
             post_alu_2->push_back(data);
 
-            pre_alu_2->erase(pre_alu_2->begin() + 1);
+            pre_alu_2->erase(pre_alu_2->begin());
         }
     }
 
@@ -806,7 +835,7 @@ public:
                 data.value = memory->find(registers[i.r1] + i.lValue)->second;
                 post_mem->push_back(data);
             }
-            pre_mem->erase(pre_mem->begin() + 1);
+            pre_mem->erase(pre_mem->begin());
         }
     }
 
@@ -814,13 +843,13 @@ public:
         if (!post_mem->empty()) {
             WriteData data = post_mem->front();
             registers[data.r] = data.value;
-            post_mem->erase(post_mem->begin() + 1);
+            post_mem->erase(post_mem->begin());
             unlock(data.i, data.p_order);
         }
         if (!post_alu_2->empty()) {
             WriteData data = post_alu_2->front();
             registers[data.r] = data.value;
-            post_alu_2->erase(post_alu_2->begin() + 1);
+            post_alu_2->erase(post_alu_2->begin());
             unlock(data.i, data.p_order);
         }
     }
