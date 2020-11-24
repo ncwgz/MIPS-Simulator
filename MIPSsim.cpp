@@ -35,6 +35,10 @@ bool operator < (const Instruction &i1, const Instruction &i2) {
     return (i1.index < i2.index);
 }
 
+bool operator == (const Instruction &i1, const Instruction &i2) {
+    return (i1.index == i2.index);
+}
+
 struct WriteData {
     Instruction i;
     int p_order;
@@ -55,7 +59,7 @@ private:
 
     vector<pair<int, Instruction>>*    pre_issue;  // 4 entries
     vector<pair<int, Instruction>>*    pre_alu_1;  // 2 entries
-    vector<pair<int, Instruction>>*    pre_alu_2;  // 2 entry
+    vector<pair<int, Instruction>>*    pre_alu_2;  // 2 entries
     vector<WriteData>*                 post_alu_2; // 1 entry
     vector<pair<int, Instruction>>*    pre_mem;    // 1 entry
     vector<WriteData>*                 post_mem;   // 1 entry
@@ -69,32 +73,33 @@ private:
         if (i.category == 1) {
             // mem[r1 + value] <- r2
             if (i.opcode == 6) {
-                if (w_ready[i.r1].empty()) r_ready[i.r1].push_back(p_order);
-                if (w_ready[i.r2].empty()) r_ready[i.r2].push_back(p_order);
+                w_ready[i.r1].push_back(p_order);
+                w_ready[i.r2].push_back(p_order);
             }
             // r2 = r1 op value
             else {
-                if (r_ready[i.r2].empty()) r_ready[i.r2].push_back(p_order);
-                if (w_ready[i.r2].empty()) w_ready[i.r2].push_back(p_order);
+                r_ready[i.r2].push_back(p_order);
+                w_ready[i.r2].push_back(p_order);
 
-                if (w_ready[i.r1].empty()) w_ready[i.r1].push_back(p_order);
+                w_ready[i.r1].push_back(p_order);
             }
         }
         if (i.category == 3) {
             // r3 <- r1 op r2
             if (i.opcode < 8) {
-                if (r_ready[i.r3].empty()) r_ready[i.r3].push_back(p_order);
-                if (w_ready[i.r3].empty()) w_ready[i.r3].push_back(p_order);
+                r_ready[i.r3].push_back(p_order);
+                w_ready[i.r3].push_back(p_order);
 
-                if (w_ready[i.r1].empty()) w_ready[i.r1].push_back(p_order);
-                if (w_ready[i.r2].empty()) w_ready[i.r2].push_back(p_order);
+                w_ready[i.r1].push_back(p_order);
+                if (i.r1 != i.r2)
+                    w_ready[i.r2].push_back(p_order);
             }
             // r2 <- r1 op value
             else {
-                if (r_ready[i.r2].empty()) r_ready[i.r2].push_back(p_order);
-                if (w_ready[i.r2].empty()) w_ready[i.r2].push_back(p_order);
+                r_ready[i.r2].push_back(p_order);
+                w_ready[i.r2].push_back(p_order);
 
-                if (w_ready[i.r1].empty()) w_ready[i.r1].push_back(p_order);
+                w_ready[i.r1].push_back(p_order);
             }
         }
     }
@@ -114,10 +119,10 @@ private:
         if (i.category == 1) {
             // mem[r1 + value] <- r2
             if (i.opcode == 6) {
-                erase_lock(true, i.r1, p_order);
-                erase_lock(true, i.r2, p_order);
+                erase_lock(false, i.r1, p_order);
+                erase_lock(false, i.r2, p_order);
             }
-                // r2 = r1 op value
+            // r2 = r1 op value
             else {
                 erase_lock(true, i.r2, p_order);
                 erase_lock(false, i.r2, p_order);
@@ -160,6 +165,344 @@ private:
             }
         }
         return false;
+    }
+
+    // FETCH
+    vector<pair<int, Instruction>>* fetch() {
+        auto to_fetch = new vector<pair<int, Instruction>>();
+
+        this->executed_instruction = nullptr;
+        for (int i = 0; i < 2; ++i) {
+            auto inst = instructions->find(PC)->second;
+            // pre_issue_queue is full
+            if (pre_issue->size() + to_fetch->size() == 4) break;
+            // Non-branch operations
+            if (inst.category == 3 || (inst.category == 1 && inst.opcode > 5 && inst.opcode != 11)) {
+                to_fetch->push_back(make_pair(fetch_counter, inst));
+                lock (inst, fetch_counter);
+                fetch_counter ++;
+                PC += 4;
+                continue;
+            }
+            // NOP
+            if (inst.opcode == 11) {
+                this->executed_instruction = &instructions->find(PC)->second;
+                PC += 4;
+                continue;
+            }
+            // BREAK
+            if (inst.opcode == 5) {
+                this->isToBreak = true;
+                Instruction ii = inst;
+                this->executed_instruction = &instructions->find(PC)->second;
+                break;
+            }
+            // J
+            if (inst.opcode == 0) {
+                this->executed_instruction = &instructions->find(PC)->second;
+                PC = inst.lValue;
+                break;
+            }
+            // JR, BLTZ, BLGZ
+            if (inst.opcode == 1 || inst.opcode == 3 || inst.opcode == 4) {
+                if (!check_lock(true, inst.r1, fetch_counter)) {
+                    switch (inst.opcode) {
+                        // JR
+                        case 1: {
+                            this->executed_instruction = &instructions->find(PC)->second;
+                            PC = registers[inst.r1];
+                            this->waiting_instruction = nullptr;
+                            break;
+                        }
+                            // BLTZ
+                        case 3: {
+                            if (registers[inst.r1] < 0) {
+                                this->executed_instruction = &instructions->find(PC)->second;
+                                PC += inst.lValue;
+                                this->waiting_instruction = nullptr;
+                            }
+                            break;
+                        }
+                            // BGTZ
+                        case 4: {
+                            if (registers[inst.r2] > 0) {
+                                this->executed_instruction = &instructions->find(PC)->second;
+                                PC += inst.lValue;
+                                this->waiting_instruction = nullptr;
+                            }
+                            break;
+                        }
+                    }
+                    break;
+                } else {
+                    this->waiting_instruction = &instructions->find(PC)->second;
+                    break;
+                }
+            }
+            // BEQ
+            if (inst.opcode == 2) {
+                if ((!check_lock(true, inst.r1, fetch_counter)) && (!check_lock(true,inst.r2, fetch_counter))) {
+                    this->executed_instruction = &instructions->find(PC)->second;
+                    this->waiting_instruction = nullptr;
+                    if (registers[inst.r1] == registers[inst.r2]) {
+                        PC += inst.lValue;
+                    } else {
+                        PC += 4;
+                    }
+                    break;
+                } else {
+                    this->waiting_instruction = &instructions->find(PC)->second;
+                    break;
+                }
+            }
+        }
+        return to_fetch;
+    }
+    void ffetch(vector<pair<int, Instruction>> to_fetch) {
+        for (auto it : to_fetch) {
+            pre_issue->push_back(it);
+        }
+    }
+
+    // ISSUE
+    vector<pair<int, Instruction>>* issue() {
+        bool is_alu1_allocated = false;
+        bool is_alu2_allocated = false;
+        auto *to_issue = new vector<pair<int, Instruction>>();
+
+        auto it = pre_issue->begin();
+        while (it != pre_issue->end()) {
+
+            // ALU1 & ALU2 both allocated
+            if (is_alu1_allocated && is_alu2_allocated) {
+                break;
+            }
+
+            Instruction i = it->second;
+            int o = it->first;
+
+            // ======= check registers =======
+            // SW: read r1, r2
+            if (i.category == 1 && i.opcode == 6) {
+                if (check_lock(true, i.r1, o) || check_lock(true, i.r2, o)) {
+                    it++;
+                    continue;
+                }
+            }
+            // write r3, read r1, r2
+            else if (i.category == 3 && i.opcode < 8) {
+                if (check_lock(false, i.r3, o) || check_lock(true, i.r1, o) || check_lock(true, i.r2, o)) {
+                    it++;
+                    continue;
+                }
+            }
+            // write r2, read r1
+            else {
+                if (check_lock(false, i.r2, o) || check_lock(true, i.r1, o)) {
+                    it++;
+                    continue;
+                }
+            }
+            // ============ done =============
+
+            // ========= check stores ========
+            // LW/SW: No SW before it
+            if (i.category == 1 && i.opcode < 8) {
+                for (auto itt : *pre_issue) {
+                    if (itt.second.category == 1 && itt.second.opcode == 6) {
+                        if (itt.first < it->first) {
+                            it ++;
+                            continue;
+                        }
+                    }
+                }
+            }
+            // ============ done =============
+
+            // ALU2
+            if (i.category == 3 || (i.category == 1 && i.opcode > 7)) {
+                if (!is_alu2_allocated) {
+                    to_issue->push_back(*it);
+                    is_alu2_allocated = true;
+                }
+                it ++;
+                continue;
+            }
+            // ALU1
+            else {
+                if (!is_alu1_allocated) {
+                    to_issue->push_back(*it);
+                    is_alu1_allocated = true;
+                }
+                it ++;
+                continue;
+            }
+        }
+
+        for (auto it : *to_issue) {
+            pre_issue->erase(
+                    remove(pre_issue->begin(), pre_issue->end(), it),
+                    pre_issue->end());
+        }
+        return to_issue;
+    }
+    void iissue(vector<pair<int, Instruction>> to_issue) {
+        for (auto it : to_issue) {
+            // ALU2
+            if (it.second.category == 3 || (it.second.category == 1 && it.second.opcode > 7)) {
+                pre_alu_2->push_back(it);
+            }
+            // ALU1
+            else {
+                pre_alu_1->push_back(it);
+            }
+        }
+    }
+
+    // ALU1
+    pair<int, Instruction>* alu1() {
+        pair<int, Instruction>* to_mem = nullptr;
+        if (!pre_alu_1->empty()) {
+            auto *p = new pair<int, Instruction>();
+            *p = pre_alu_1->front();
+            to_mem = p;
+            pre_alu_1->erase(pre_alu_1->begin());
+        }
+        return to_mem;
+    }
+    void aalu1(pair<int, Instruction>* to_mem) {
+        if (to_mem) {
+            pre_mem->push_back(*to_mem);
+        }
+    }
+
+    // ALU2
+    WriteData* alu2() {
+        WriteData* to_write = nullptr;
+        if (!pre_alu_2->empty()) {
+            auto it = pre_alu_2->front();
+            Instruction i = it.second;
+            to_write = new WriteData;
+            to_write->i = i;
+            to_write->p_order = it.first;
+
+            if (i.category == 1) {
+                to_write->r = i.r2;
+                switch (i.opcode) {
+                    case 8: { // SLL
+                        to_write->value = registers[i.r1] << i.lValue; break;
+                    }
+                    case 9: { // SRL
+                        to_write->value = ((unsigned int)registers[i.r1]) >> i.lValue; break;
+                    }
+                    case 10: { // SRA
+                        to_write->value = registers[i.r1] >> i.lValue; break;
+                    }
+                }
+            }
+            else if (i.category == 3 && i.opcode < 8) {
+                to_write->r = i.r3;
+                switch (i.opcode) {
+                    case 0: { // ADD
+                        to_write->value = registers[i.r1] + registers[i.r2]; break;
+                    }
+                    case 1: { // SUB
+                        to_write->value = registers[i.r1] - registers[i.r2]; break;
+                    }
+                    case 2: { // MUL
+                        to_write->value = registers[i.r1] * registers[i.r2]; break;
+                    }
+                    case 3: { // AND
+                        to_write->value = registers[i.r1] & registers[i.r2]; break;
+                    }
+                    case 4: { // OR
+                        to_write->value = registers[i.r1] | registers[i.r2]; break;
+                    }
+                    case 5: { // XOR
+                        to_write->value = registers[i.r1] ^ registers[i.r2]; break;
+                    }
+                    case 6: { // NOR
+                        to_write->value = ~(registers[i.r1] | registers[i.r2]); break;
+                    }
+                    case 7: { // SLT
+                        if (registers[i.r1] < registers[i.r2]) {
+                            to_write->value = 1;
+                        } else {
+                            to_write->value = 0;
+                        }
+                        break;
+                    }
+                }
+            }
+            else if (i.category == 3 && i.opcode > 7) {
+                to_write->r = i.r2;
+                switch (i.opcode) {
+                    case 8: { // ADDI
+                        to_write->value = registers[i.r1] + i.sValue; break;
+                    }
+                    case 9: { // ANDI
+                        to_write->value = registers[i.r1] & i.lValue; break;
+                    }
+                    case 10: { // ORI
+                        to_write->value = registers[i.r1] | i.lValue; break;
+                    }
+                    case 11: { // XORI
+                        to_write->value = registers[i.r1] ^ i.lValue; break;
+                    }
+                }
+            }
+
+            pre_alu_2->erase(pre_alu_2->begin());
+        }
+        return to_write;
+    }
+    void aalu2(WriteData *to_write) {
+        if (to_write) {
+            post_alu_2->push_back(*to_write);
+        }
+    }
+
+    // MEM
+    WriteData* mem() {
+        WriteData* to_write = nullptr;
+        if (!pre_mem->empty()) {
+            Instruction i = (*pre_mem)[0].second;
+            // SW: Do now
+            if (i.opcode == 6) {
+                memory->find(registers[i.r1] + i.lValue)->second = registers[i.r2];
+            }
+            // LW: Generate WriteData
+            else {
+                to_write = new WriteData;
+                to_write->i = i;
+                to_write->p_order = (*pre_mem)[0].first;
+                to_write->r = i.r2;
+                to_write->value = memory->find(registers[i.r1] + i.lValue)->second;
+            }
+            pre_mem->erase(pre_mem->begin());
+        }
+        return to_write;
+    }
+    void mmem(WriteData* to_write) {
+        if (to_write) {
+            post_mem->push_back(*to_write);
+        }
+    }
+
+    // WB
+    void writeback() {
+        if (!post_mem->empty()) {
+            WriteData data = post_mem->front();
+            registers[data.r] = data.value;
+            post_mem->erase(post_mem->begin());
+            unlock(data.i, data.p_order);
+        }
+        if (!post_alu_2->empty()) {
+            WriteData data = post_alu_2->front();
+            registers[data.r] = data.value;
+            post_alu_2->erase(post_alu_2->begin());
+            unlock(data.i, data.p_order);
+        }
     }
 
 public:
@@ -560,298 +903,55 @@ public:
         ofstream file("simulation.txt", ios::out);
         while (!isToBreak) {
             cycle_counter ++;
-            cout << cycle_counter << ", " << PC << endl;
+//            cout << cycle_counter << ", " << PC << endl;
+
+            // At the beginning of the cycle:
+            auto to_fetch = fetch();
+            auto to_issue = issue();
+            auto to_mem = alu1();
+            auto to_write1 = mem();
+            auto to_write2 = alu2();
             writeback();
-            mem();
-            alu1();
-            alu2();
-            issue();
-            fetch();
+
+            // At the end of the cycle:
+            ffetch(*to_fetch);
+            iissue(*to_issue);
+            aalu1(to_mem);
+            mmem(to_write1);
+            aalu2(to_write2);
+
             writeSimulationFile(file);
+
+            cout << "Cycle " << cycle_counter << ": ============" << endl;
+            cout << "R" << endl;
+            for (int i = 0; i < 32; ++i) {
+                auto it = r_ready[i];
+                if (!it.empty()) {
+                    cout << "\t#";
+                    cout << i << ":";
+                    for (auto itt : it) {
+                        cout << itt << "\t";
+                    }
+                    cout << endl;
+                }
+            }
+            cout << "W" << endl;
+            for (int i = 0; i < 32; ++i) {
+                auto it = w_ready[i];
+                if (!it.empty()) {
+                    cout << "\t#";
+                    cout << i << ":";
+                    for (auto itt : it) {
+                        cout << itt << "\t";
+                    }
+                    cout << endl;
+                }
+            }
+            cout << endl;
         }
 
         file << endl;
         file.close();
-    }
-
-    void fetch() {
-        this->waiting_instruction = nullptr;
-        this->executed_instruction = nullptr;
-
-        for (int i = 0; i < 2; ++i) {
-            auto inst = instructions->find(PC)->second;
-            // pre_issue_queue is full
-            if (pre_issue->size() == 4) {
-                return;
-            }
-            // ALU2 and ALU1 operations
-            if (inst.category == 3 || (inst.category == 1 && inst.opcode > 5 && inst.opcode != 11)) {
-                pre_issue->push_back(make_pair(fetch_counter, inst));
-                lock (inst, fetch_counter);
-                fetch_counter ++;
-                PC += 4;
-                continue;
-            }
-            // NOP
-            if (inst.opcode == 11) {
-                PC += 4;
-                Instruction ii = inst;
-                this->executed_instruction = &ii;
-                continue;
-            }
-            // BREAK
-            if (inst.opcode == 5) {
-                this->isToBreak = true;
-                Instruction ii = inst;
-                this->executed_instruction = &ii;
-                return;
-            }
-            // J
-            if (inst.opcode == 0) {
-                PC = inst.lValue;
-                Instruction ii = inst;
-                this->executed_instruction = &ii;
-                return;
-            }
-            // JR, BLTZ, BLGZ
-            if (inst.opcode == 1 || inst.opcode == 3 || inst.opcode == 4) {
-                if (!check_lock(true, inst.r1, fetch_counter)) {
-                    switch (inst.opcode) {
-                        // JR
-                        case 1: {
-                            PC = registers[inst.r1];
-                            Instruction ii = inst;
-                            this->executed_instruction = &ii;
-                            break;
-                        }
-                            // BLTZ
-                        case 3: {
-                            if (registers[inst.r1] < 0) {
-                                PC += inst.lValue;
-                                Instruction ii = inst;
-                                this->executed_instruction = &ii;
-                            }
-                            break;
-                        }
-                            // BGTZ
-                        case 4: {
-                            if (registers[inst.r2] > 0) {
-                                PC += inst.lValue;
-                                Instruction ii = inst;
-                                this->executed_instruction = &ii;
-                            }
-                            break;
-                        }
-                    }
-                    return;
-                } else {
-                    Instruction ii = inst;
-                    this->waiting_instruction = &ii;
-                    return;
-                }
-            }
-            // BEQ
-            if (inst.opcode == 2) {
-                if ((!check_lock(true, inst.r1, fetch_counter)) && (!check_lock(true,inst.r2, fetch_counter))) {
-                    if (registers[inst.r1] == registers[inst.r2]) {
-                        PC += inst.lValue;
-                    } else {
-                        PC += 4;
-                    }
-                    Instruction ii = inst;
-                    this->executed_instruction = &ii;
-                    return;
-                } else {
-                    Instruction ii = inst;
-                    this->waiting_instruction = &ii;
-                    return;
-                }
-            }
-        }
-    }
-
-    void issue() {
-        bool is_alu1_allocated = false;
-        bool is_alu2_allocated = false;
-        auto it = pre_issue->begin();
-        while (it != pre_issue->end()) {
-
-            // ALU1 & ALU2 both allocated
-            if (is_alu1_allocated && is_alu2_allocated) return;
-            Instruction i = it->second;
-            int o = it->first;
-
-            // ======= check registers =======
-            // SW: read r1, r2
-            if (i.category == 1 && i.opcode == 6) {
-                if (check_lock(true, i.r1, o) || check_lock(true, i.r2, o))
-                    continue;
-            }
-            // write r3, read r1, r2
-            else if (i.category == 3 && i.opcode < 8) {
-                if (check_lock(false, i.r3, o) || check_lock(true, i.r1, o) || check_lock(true, i.r2, o))
-                    continue;
-            }
-            // write r2, read r1
-            else {
-                if (check_lock(false, i.r2, o) || check_lock(true, i.r1, o))
-                    continue;
-            }
-            // ============ done =============
-
-            // ========= check stores ========
-            // LW/SW: No SW before it
-            if (i.category == 1 && i.opcode < 8) {
-                for (auto itt : *pre_issue) {
-                    if (itt.second.category == 1 && itt.second.opcode == 6) {
-                        if (itt.first < it->first) {
-                            continue;
-                        }
-                    }
-                }
-            }
-            // ============ done =============
-
-            if (i.category == 3 || (i.category == 1 && i.opcode > 7)) {
-                if (!is_alu2_allocated) {
-                    pre_alu_2->push_back(*it);
-                    pre_issue->erase(it);
-                    is_alu2_allocated = true;
-                    continue;
-                }
-            } else {
-                if (!is_alu1_allocated) {
-                    pre_alu_1->push_back(*it);
-                    pre_issue->erase(it);
-                    is_alu1_allocated = true;
-                    continue;
-                }
-            }
-
-            it ++;
-        }
-    }
-
-    void alu1() {
-        if (!pre_alu_1->empty()) {
-            pre_mem->push_back((*pre_alu_1)[0]);
-            pre_alu_1->erase(pre_alu_1->begin());
-        }
-    }
-
-    void alu2() {
-        if (!pre_alu_2->empty()) {
-
-            Instruction i = (*pre_alu_2)[0].second;
-            WriteData data;
-            data.i = i;
-            data.p_order = (*pre_alu_2)[0].first;
-
-            if (i.category == 1) {
-                data.r = i.r2;
-                switch (i.opcode) {
-                    case 8: { // SLL
-                        data.value = registers[i.r1] << i.lValue; break;
-                    }
-                    case 9: { // SRL
-                        data.value = ((unsigned int)registers[i.r1]) >> i.lValue; break;
-                    }
-                    case 10: { // SRA
-                        data.value = registers[i.r1] >> i.lValue; break;
-                    }
-                }
-            }
-            else if (i.category == 3 && i.opcode < 8) {
-                data.r = i.r3;
-                switch (i.opcode) {
-                    case 0: { // ADD
-                        data.value = registers[i.r1] + registers[i.r2]; break;
-                    }
-                    case 1: { // SUB
-                        data.value = registers[i.r1] - registers[i.r2]; break;
-                    }
-                    case 2: { // MUL
-                        data.value = registers[i.r1] * registers[i.r2]; break;
-                    }
-                    case 3: { // AND
-                        data.value = registers[i.r1] & registers[i.r2]; break;
-                    }
-                    case 4: { // OR
-                        data.value = registers[i.r1] | registers[i.r2]; break;
-                    }
-                    case 5: { // XOR
-                        data.value = registers[i.r1] ^ registers[i.r2]; break;
-                    }
-                    case 6: { // NOR
-                        data.value = ~(registers[i.r1] | registers[i.r2]); break;
-                    }
-                    case 7: { // SLT
-                        if (registers[i.r1] < registers[i.r2]) {
-                            data.value = 1;
-                        } else {
-                            data.value = 0;
-                        }
-                        break;
-                    }
-                }
-            }
-            else if (i.category == 3 && i.opcode > 7) {
-                data.r = i.r2;
-                switch (i.opcode) {
-                    case 8: { // ADDI
-                        data.value = registers[i.r1] + i.sValue; break;
-                    }
-                    case 9: { // ANDI
-                        data.value = registers[i.r1] & i.lValue; break;
-                    }
-                    case 10: { // ORI
-                        data.value = registers[i.r1] | i.lValue; break;
-                    }
-                    case 11: { // XORI
-                        data.value = registers[i.r1] ^ i.lValue; break;
-                    }
-                }
-            }
-
-            post_alu_2->push_back(data);
-
-            pre_alu_2->erase(pre_alu_2->begin());
-        }
-    }
-
-    void mem() {
-        if (!pre_mem->empty()) {
-            Instruction i = (*pre_mem)[0].second;
-            // SW
-            if (i.opcode == 6) {
-                memory->find(registers[i.r1] + i.lValue)->second = registers[i.r2];
-            }
-            // LW
-            else {
-                WriteData data;
-                data.i = i;
-                data.p_order = (*pre_mem)[0].first;
-                data.r = i.r2;
-                data.value = memory->find(registers[i.r1] + i.lValue)->second;
-                post_mem->push_back(data);
-            }
-            pre_mem->erase(pre_mem->begin());
-        }
-    }
-
-    void writeback() {
-        if (!post_mem->empty()) {
-            WriteData data = post_mem->front();
-            registers[data.r] = data.value;
-            post_mem->erase(post_mem->begin());
-            unlock(data.i, data.p_order);
-        }
-        if (!post_alu_2->empty()) {
-            WriteData data = post_alu_2->front();
-            registers[data.r] = data.value;
-            post_alu_2->erase(post_alu_2->begin());
-            unlock(data.i, data.p_order);
-        }
     }
 };
 
